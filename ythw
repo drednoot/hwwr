@@ -1,0 +1,139 @@
+#!/bin/bash
+
+# parsing args
+help() {
+  cat <<EOF
+Usage: ythw [-hb] [link]
+  -h    show this help
+  -b    browse history
+EOF
+  exit 0
+}
+
+browse=0
+while getopts "hb" opt; do
+  case $opt in
+    b) browse=1 ;;
+    h) help ;;
+    \?) echo "Invalid option: -$OPTARG" >&2; help ;;
+    :)  echo "Option -$OPTARG requires an argument." >&2; help ;;
+  esac
+done
+shift $((OPTIND -1))
+
+# internal variables
+CONFIG_FILE=${CONFIG_FILE:-$HOME/.config/ythw/history.json}
+PLAYER=${PLAYER:-mpv}
+YTDL=${YTDL:-yt-dlp}
+HISTORY_DISPLAY_SIZE=${HISTORY_DISPLAY_SIZE:-10}
+
+# initial setup
+if [ ! -s "$CONFIG_FILE" ]; then
+  mkdir -p "$(dirname "$CONFIG_FILE")"
+  echo '{"history": []}' > "$CONFIG_FILE"
+fi
+
+# utility functions
+add_to_history() {
+  local link="$1"
+  local title="$($YTDL --get-title --skip-download $link)"
+
+  if [ -z "$title" ]; then
+    echo "Failed to retrieve title for link: $link"
+    return 1
+  fi
+
+  local date=$(date "+%Y-%m-%d %H:%M:%S")
+  local entry="{\"link\": \"$link\", \"title\": \"$title\", \"date\": \"$date\"}"
+
+  # add entry
+  jq ".history |= [$entry] + ." "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+}
+
+get_entry() {
+  local link="$1"
+
+  # check if entry already exists
+  local entry=$(jq ".history[] | select(.link == \"$link\")" "$CONFIG_FILE")
+  if [ -n "$entry" ]; then
+    # modify entry's date
+    local date=$(date "+%Y-%m-%d %H:%M:%S")
+    local new_entry="$(echo "$entry" | jq --arg date "$date" '.date = $date')"
+
+    # delete and add a new entry
+    jq "del(.history[] | select(.link == \"$link\")) | .history |= [$new_entry] + ." "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+
+    return
+  fi
+
+  # if entry doesn't exist, create it
+  add_to_history "$link"
+}
+
+# Browse history is selected
+if [ $browse -eq 1 ]; then
+  if [ ! -s "$CONFIG_FILE" ]; then
+    echo 'History is empty, provide a link to a video'
+    exit 1
+  fi
+
+  # print history
+  history=$(jq -r ".history[0:$HISTORY_DISPLAY_SIZE][] | \"\(.title) (\(.link))\"" "$CONFIG_FILE")
+  if [ -z "$history" ]; then
+    echo 'History is empty, provide a link to a video'
+    exit 1
+  fi
+  echo "$history" | nl -w2 -s'. '
+
+  echo 'Select a video to play:'
+  read -r choice
+  if ! [[ "$choice" =~ ^[0-9]+$ ]]; then
+    echo "Invalid choice: $choice"
+    exit 1
+  fi
+
+  link=$(jq -r ".history[$((choice-1))].link" "$CONFIG_FILE")
+  if [ -z "$link" ]; then
+    echo "Invalid choice: $choice"
+    exit 1
+  fi
+  if [ "$link" = 'null' ]; then
+    echo "Invalid choice: $choice"
+    exit 1
+  fi
+
+  get_entry "$link"
+
+  # play video
+  exec "$PLAYER" "$link"
+  exit 0
+fi
+
+# Empty link
+play_latest() {
+  if [ ! -s "$CONFIG_FILE" ]; then
+    echo 'History is empty, provide a link to a video'
+    return 1
+  fi
+
+  local latest=$(jq -r '.history[0].link' $CONFIG_FILE)
+  if [ "$latest" = 'null' ]; then
+    echo 'History is empty, provide a link to a video'
+    return 1
+  fi
+
+  exec "$PLAYER" "$latest"
+}
+
+if [ $# -eq 0 ]; then
+  play_latest
+  exit $?
+fi
+
+# Link provided
+get_entry "$1"
+if [ ! $? -eq 0 ]; then
+  exit 1
+fi
+
+exec "$PLAYER" "$1"

@@ -1,0 +1,11 @@
+* history file
+  { 
+  "history": \[{* entry}[entries, last to first]\]
+  }
+
+* entry
+  {
+  "title": "Video title",
+  "link": "Video URI",
+  "date": "Date and time when the video was added"
+  }
